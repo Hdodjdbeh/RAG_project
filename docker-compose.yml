@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  # Основной сервис генерации ответов
+  reply-generator:
+    build: .
+    container_name: reply-generator
+    ports:
+      - "8000:8000"
+    environment:
+      - YANDEX_API_KEY=${YANDEX_API_KEY}
+      - YANDEX_FOLDER_ID=${YANDEX_FOLDER_ID}
+      - CHROMA_PATH=/app/chroma_db
+      - RULES_PATH=/app/data/knowledge_base/rules.json
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ANONYMIZED_TELEMETRY=false
+      - CHROMA_TELEMETRY=false
+    volumes:
+      # Монтируем данные для персистентности
+      - ./chroma_db:/app/chroma_db
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - reply-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
+  # Prometheus для сбора метрик
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: reply-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - reply-network
+    depends_on:
+      - reply-generator
+
+  # Grafana для визуализации метрик
+  grafana:
+    image: grafana/grafana:latest
+    container_name: reply-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    restart: unless-stopped
+    networks:
+      - reply-network
+    depends_on:
+      - prometheus
+
+  # Опционально: Redis для кэширования
+  redis:
+    image: redis:7-alpine
+    container_name: reply-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - reply-network
+    profiles:
+      - with-cache
+
+networks:
+  reply-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  redis-data:
